@@ -83,15 +83,6 @@ INWX_TOTP_COMMAND='pass otp inwx/api'
 
 The configuration files are sourced as shell code and therefore must only be writable by trusted administrators.
 
-## Docker
-
-```sh
-cd docker
-docker compose up -d --build
-```
-
-The Compose file mounts `../nsupdate` into `/config`. Copy both `.dist` files to their active names before starting the container.
-
 ## Security notes
 
 Automation requires access to both the password and the material needed to generate the second factor. Prefer a dedicated INWX sub-account with only the DNS permissions and zones it needs. Protect all configuration files with mode `0600`.
