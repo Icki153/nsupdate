@@ -1,332 +1,285 @@
 #!/usr/bin/env sh
+# Update INWX DNS records with the current WAN IP, including TOTP-based 2FA.
+# Based on https://github.com/chrisb86/nsupdate (MIT License).
 
-# Update a nameserver entry at inwx with the current WAN IP (DynDNS)
+set -u
 
-# Copyright 2013 Christian Busch
-# http://github.com/chrisb86/
+chat() {
+    message_type=$1
+    message=$2
+    log="${nsupdate_log_dir}/${nsupdate_log_file}"
+    log_date=$(date "+${log_date_format}")
+    line="[${log_date}]"
 
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
+    case "$message_type" in
+        0) line="$line [INFO] $message" ;;
+        1) line="$line [ERROR] $message" ;;
+        2) [ "$VERBOSE" = "true" ] || return 0; line="$line [INFO] $message" ;;
+        3) [ "$DEBUG" = "true" ] || return 0; line="$line [DEBUG] $message" ;;
+        *) line="$line $message" ;;
+    esac
 
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-# LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-# WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-# Print and log messages when verbose mode is on
-# Usage: chat [0|1|2|3] MESSAGE
-## 0 = regular output
-## 1 = error messages
-## 2 = verbose messages
-## 3 = debug messages
-
-chat () {
-  messagetype=$1
-  message=$2
-  log=$nsupdate_log_dir/$nsupdate_log_file
-  log_date=$(date "+$log_date_format")
-
-  if [ $messagetype = 0 ]; then
-    echo "[$log_date] [INFO] $message" | tee -a $log ;
-  fi
-  #
-  if [ $messagetype = 1 ]; then
-    echo "[$log_date] [ERROR] $message" | tee -a $log ; exit 1;
-  fi
-
-  if [ $messagetype = 2 ] && [ "$VERBOSE" = true ]; then
-    echo "[$log_date] [INFO] $message" | tee -a $log
-  fi
-
-  if [ $messagetype = 3 ] && [ "$DEBUG" = true ]; then
-    echo "[$log_date] [DEBUG] $message" | tee -a $log
-  fi
+    printf '%s\n' "$line" | tee -a "$log"
+    [ "$message_type" -eq 1 ] && exit 1
+    return 0
 }
 
-# Load config file, set default variables and get wan IP
-# Usage: init
-init () {
-
-  nsupdate_conf_file="nsupdate.conf"
-  basedir="${BASEDIR:-/usr/local/etc}"
-  nsupdate_conf_dir="${NSUPDATE_CONF_DIR:-$basedir/nsupdate}"
-
-  ## Try to load nsupdate.conf
-  [ -f "./$nsupdate_conf_file" ] && . ./$nsupdate_conf_file
-  [ -f "$nsupdate_conf_dir/$nsupdate_conf_file" ] && . $nsupdate_conf_dir/$nsupdate_conf_file
-
-  VERBOSE="${VERBOSE:-false}"
-  DEBUG="${DEBUG:-false}"
-
-  if [ "$DEBUG" = true ]; then
-    set -x
-  fi
-
-  nsupdate_confd_dir="${NSUPDATE_CONFD_DIR:-$nsupdate_conf_dir/conf.d}"
-  log_date_format="${LOG_DATE_FORMAT:-%Y-%m-%d %H:%M:%S}"
-  nsupdate_log_dir="${NSUPDATE_LOG_DIR:-/var/log/nsupdate}"
-  nsupdate_log_file="${NSUPDATE_LOG_FILE:-nsupdate.log}"
-  tmp_dir="${NSUPDATE_TMP_DIR:-/tmp}"
-  nsupdate_conf_extension="${NSUPDATE_CONF_EXTENSION:-.conf}"
-
-  nsupdate_record_type="${NSUPDATE_RECORD_TYPE:-A}"
-  nsupdate_record_ttl="${NSUPDATE_RECORD_TTL:-300}"
-
-  inwx_api="https://api.domrobot.com/xmlrpc/"
-  inwx_api_xpath_ip='string(/methodResponse/params/param/value/struct/member[name="resData"]/value/struct/member[name="record"]/value/array/data/value/struct/member[name="content"]/value/string)'
-  inwx_api_xpath_id='string(/methodResponse/params/param/value/struct/member[name="resData"]/value/struct/member[name="record"]/value/array/data/value/struct/member[name="id"]/value/string)'
-  inwx_nameserver="ns.inwx.de"
-  ip_check_site="${NSUPDATE_IP_CHECK_SITE:-https://api64.ipify.org}"
-
-  ## Get WAN IP 4
-  wan_ip4="$(curl -s -4 ${ip_check_site})"
-  chat 2 "WAN IP 4: ${wan_ip4}"
-
-  ## Get WAN IP 6
-  wan_ip6="$(curl -s -6 ${ip_check_site})"
-  chat 2 "WAN IP 6: ${wan_ip6}"
+xml_escape() {
+    printf '%s' "$1" | sed \
+        -e 's/&/\&amp;/g' \
+        -e 's/</\&lt;/g' \
+        -e 's/>/\&gt;/g' \
+        -e 's/"/\&quot;/g' \
+        -e "s/'/\&apos;/g"
 }
 
-# Get the data for a given domain
-# Usage: get_inwx_domain_id
-get_domain_info () {
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || chat 1 "Required command not found: $1"
+}
 
-  ## Check if xmllint is installed and use it.
-  if command -v xmllint > /dev/null 2>&1; then
+init() {
+    nsupdate_conf_file="nsupdate.conf"
+    basedir="${BASEDIR:-/usr/local/etc}"
+    nsupdate_conf_dir="${NSUPDATE_CONF_DIR:-${basedir}/nsupdate}"
 
-    ## File name for temporary file to store the XML from API
-    tmp_file="${main_domain}_${record_type}_$(date +%s).xml" # ${main_domain} in case of wildcards in ${domain}
+    [ -f "./${nsupdate_conf_file}" ] && . "./${nsupdate_conf_file}"
+    [ -f "${nsupdate_conf_dir}/${nsupdate_conf_file}" ] && . "${nsupdate_conf_dir}/${nsupdate_conf_file}"
 
-    chat 3 "Found xmllint. Using curl for retrieving data from INWX API."
+    VERBOSE="${VERBOSE:-false}"
+    DEBUG="${DEBUG:-false}"
+    [ "$DEBUG" = "true" ] && set -x
 
-    inwx_api_xml_info="<?xml version=\"1.0\"?>
-    <methodCall>
-    <methodName>nameserver.info</methodName>
-    <params>
-        <param>
-          <value>
-              <struct>
-                <member>
-                    <name>user</name>
-                    <value>
-                      <string>${inwx_user}</string>
-                    </value>
-                </member>
-                <member>
-                    <name>lang</name>
-                    <value>
-                      <string>en</string>
-                    </value>
-                </member>
-                <member>
-                    <name>pass</name>
-                    <value>
-                      <string>${inwx_password}</string>
-                    </value>
-                </member>
-                <member>
-                    <name>domain</name>
-                    <value>
-                      <string>${main_domain}</string>
-                    </value>
-                </member>
-                <member>
-                    <name>name</name>
-                    <value>
-                      <string>${domain}</string>
-                    </value>
-                </member>
-                <member>
-                    <name>type</name>
-                    <value>
-                      <string>${record_type}</string>
-                    </value>
-                </member>
-              </struct>
-          </value>
-        </param>
-    </params>
-    </methodCall>"
+    nsupdate_confd_dir="${NSUPDATE_CONFD_DIR:-${nsupdate_conf_dir}/conf.d}"
+    log_date_format="${LOG_DATE_FORMAT:-%Y-%m-%d %H:%M:%S}"
+    nsupdate_log_dir="${NSUPDATE_LOG_DIR:-/var/log/nsupdate}"
+    nsupdate_log_file="${NSUPDATE_LOG_FILE:-nsupdate.log}"
+    tmp_dir="${NSUPDATE_TMP_DIR:-/tmp}"
+    nsupdate_conf_extension="${NSUPDATE_CONF_EXTENSION:-.conf}"
+    nsupdate_record_type="${NSUPDATE_RECORD_TYPE:-A}"
+    nsupdate_record_ttl="${NSUPDATE_RECORD_TTL:-300}"
+    inwx_api="${NSUPDATE_INWX_API:-https://api.domrobot.com/xmlrpc/}"
+    inwx_nameserver="${NSUPDATE_INWX_NAMESERVER:-ns.inwx.de}"
+    ip_check_site="${NSUPDATE_IP_CHECK_SITE:-https://api64.ipify.org}"
+    curl_timeout="${NSUPDATE_CURL_TIMEOUT:-30}"
 
-    ## Get domain info from INWX API and save it to a temporary file
-    curl --silent --show-error --fail --output ${tmp_dir}/${tmp_file} -X POST ${inwx_api} -H "Content-Type: application/xml" -d "${inwx_api_xml_info}"
+    mkdir -p "$nsupdate_log_dir" || exit 1
+    require_command curl
+    require_command xmllint
+    require_command mktemp
 
-    ## Extract ID and IP from INWX data
-    inwx_domain_ip="$(xmllint --xpath ${inwx_api_xpath_ip} ${tmp_dir}/${tmp_file})"
-    inwx_domain_id="$(xmllint --xpath ${inwx_api_xpath_id} ${tmp_dir}/${tmp_file})"
+    wan_ip4=$(curl --silent --show-error --fail --max-time "$curl_timeout" -4 "$ip_check_site" 2>/dev/null || true)
+    wan_ip6=$(curl --silent --show-error --fail --max-time "$curl_timeout" -6 "$ip_check_site" 2>/dev/null || true)
+    chat 2 "WAN IPv4: ${wan_ip4:-unavailable}"
+    chat 2 "WAN IPv6: ${wan_ip6:-unavailable}"
+}
 
-    ## Remove domain info tmp file
-    rm ${tmp_dir}/${tmp_file}
-  else  
-    ## Check if nslookup is installed and use it to get the IP
-    if command -v nslookup > /dev/null 2>&1; then
-      chat 3 "Found nslookup. Using it for IP from INWX nameserver."
-      inwx_domain_ip=$(nslookup -sil -type=${record_type} ${domain} - ${inwx_nameserver} | tail -2 | head -1 | cut -d' ' -f2)
-    ## Check if drill is installed and use it to get the IP
-    else command -v drill > /dev/null 2>&1;
-      chat 3 "Found drill. Using it for IP from INWX nameserver."
-      inwx_domain_ip=$(drill ${domain} @${inwx_nameserver} ${record_type} | head -7 | tail -1 | cut -f2 -d$'\t' -f5)
+xml_value() {
+    file=$1
+    xpath=$2
+    xmllint --xpath "string(${xpath})" "$file" 2>/dev/null || true
+}
+
+api_code() {
+    xml_value "$1" '/methodResponse/params/param/value/struct/member[name="code"]/value/*[1]'
+}
+
+api_message() {
+    xml_value "$1" '/methodResponse/params/param/value/struct/member[name="msg"]/value/*[1]'
+}
+
+api_call() {
+    method=$1
+    members=$2
+    output_file=$3
+    payload="<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<methodCall>
+  <methodName>${method}</methodName>
+  <params><param><value><struct>${members}</struct></value></param></params>
+</methodCall>"
+
+    curl --silent --show-error --fail --max-time "$curl_timeout" \
+        --cookie "$inwx_cookie_file" \
+        --cookie-jar "$inwx_cookie_file" \
+        --header 'Content-Type: application/xml' \
+        --request POST \
+        --data "$payload" \
+        --output "$output_file" \
+        "$inwx_api" || chat 1 "HTTP request to INWX failed for ${method}."
+
+    code=$(api_code "$output_file")
+    message=$(api_message "$output_file")
+    [ "$code" = "1000" ] || chat 1 "INWX ${method} failed: ${message:-unknown error} (${code:-no code})"
+}
+
+member_string() {
+    name=$(xml_escape "$1")
+    value=$(xml_escape "$2")
+    printf '<member><name>%s</name><value><string>%s</string></value></member>' "$name" "$value"
+}
+
+member_int() {
+    name=$(xml_escape "$1")
+    value=$(xml_escape "$2")
+    printf '<member><name>%s</name><value><int>%s</int></value></member>' "$name" "$value"
+}
+
+generate_totp() {
+    if [ -n "${INWX_TOTP_COMMAND:-}" ]; then
+        sh -c "$INWX_TOTP_COMMAND"
+        return
     fi
 
-    ## Set domain ID from config file
-    chat 3 "Trying to get domain ID from config file."
-    inwx_domain_id="${INWX_DOMAIN_ID}"
-  fi
-
-  if [ -z "$inwx_domain_ip" ]; then
-    chat 1 "Couldn't get current IP address for ${domain} [${record_type}]. please check the installation instructions."
-  fi
-
-  if [ -z "$inwx_domain_id" ]; then
-    chat 1 "Couldn't find domain ID for ${domain} [${record_type}]. please check the installation instructions."
-  fi
+    command -v oathtool >/dev/null 2>&1 || chat 1 "INWX requires 2FA, but oathtool is not installed and INWX_TOTP_COMMAND is not configured."
+    oathtool --totp -b "$inwx_shared_secret"
 }
 
-# Get specific WAN IP for a domain
-# Usage: get_domain_wan_ip
-get_domain_wan_ip () {
+inwx_login() {
+    inwx_cookie_file=$(mktemp "${tmp_dir%/}/nsupdate-cookie.XXXXXX") || chat 1 "Could not create cookie file."
+    chmod 600 "$inwx_cookie_file"
+    login_file=$(mktemp "${tmp_dir%/}/nsupdate-login.XXXXXX") || chat 1 "Could not create login response file."
 
-  ## Check if WAN_IP_COMMAND is set and use it for retrieving the IP
-  if [ "$WAN_IP_COMMAND" != "" ]; then
-    #WAN_IP_COMMAND="${IPCOMMAND:-$WAN_IP_COMMAND}" ## for backwards compatibility
-    wan_ip="${WAN_IP_COMMAND}"
-    chat 2 "Using WAN_IP_COMMAND for retrieving WAN IP."
-  else
-    ## Otherwise use IP retrieved from web site
-    ## Get connection type by record type
-    if [ "${record_type}" = "AAAA" ]; then
-      wan_ip="${wan_ip6}"
+    members="$(member_string user "$inwx_user")$(member_string pass "$inwx_password")$(member_string lang en)"
+    api_call account.login "$members" "$login_file"
+
+    tfa=$(xml_value "$login_file" '/methodResponse/params/param/value/struct/member[name="resData"]/value/struct/member[name="tfa"]/value/*[1]')
+    [ -n "$tfa" ] || tfa=$(xml_value "$login_file" '/methodResponse/params/param/value/struct/member[name="tfa"]/value/*[1]')
+    rm -f "$login_file"
+
+    case "$tfa" in
+        ""|NONE|none) chat 3 "INWX session authenticated without 2FA." ;;
+        GOOGLE-AUTH|TOTP)
+            [ -n "$inwx_shared_secret" ] || chat 1 "INWX requires TOTP 2FA, but no shared secret is configured."
+            tan=$(generate_totp)
+            [ -n "$tan" ] || chat 1 "Could not generate the INWX TOTP code."
+            unlock_file=$(mktemp "${tmp_dir%/}/nsupdate-unlock.XXXXXX") || chat 1 "Could not create unlock response file."
+            api_call account.unlock "$(member_string tan "$tan")" "$unlock_file"
+            rm -f "$unlock_file"
+            unset tan
+            chat 3 "INWX session unlocked with TOTP 2FA."
+            ;;
+        *) chat 1 "Unsupported INWX two-factor method: ${tfa}" ;;
+    esac
+}
+
+inwx_logout() {
+    [ -n "${inwx_cookie_file:-}" ] || return 0
+    if [ -f "$inwx_cookie_file" ]; then
+        logout_file=$(mktemp "${tmp_dir%/}/nsupdate-logout.XXXXXX" 2>/dev/null || true)
+        if [ -n "$logout_file" ]; then
+            # Logout failures are intentionally non-fatal during cleanup.
+            payload='<?xml version="1.0" encoding="UTF-8"?><methodCall><methodName>account.logout</methodName><params><param><value><struct/></value></param></params></methodCall>'
+            curl --silent --max-time "$curl_timeout" --cookie "$inwx_cookie_file" --cookie-jar "$inwx_cookie_file" \
+                --header 'Content-Type: application/xml' --request POST --data "$payload" --output "$logout_file" "$inwx_api" >/dev/null 2>&1 || true
+            rm -f "$logout_file"
+        fi
+        rm -f "$inwx_cookie_file"
+    fi
+    unset inwx_cookie_file
+}
+
+cleanup() {
+    inwx_logout
+}
+trap cleanup EXIT HUP INT TERM
+
+get_domain_info() {
+    response_file=$(mktemp "${tmp_dir%/}/nsupdate-info.XXXXXX") || chat 1 "Could not create nameserver.info response file."
+    members="$(member_string domain "$main_domain")$(member_string name "$domain")$(member_string type "$record_type")"
+    api_call nameserver.info "$members" "$response_file"
+
+    inwx_domain_ip=$(xml_value "$response_file" '/methodResponse/params/param/value/struct/member[name="resData"]/value/struct/member[name="record"]/value/array/data/value[1]/struct/member[name="content"]/value/*[1]')
+    inwx_domain_id=$(xml_value "$response_file" '/methodResponse/params/param/value/struct/member[name="resData"]/value/struct/member[name="record"]/value/array/data/value[1]/struct/member[name="id"]/value/*[1]')
+    rm -f "$response_file"
+
+    if [ -z "$inwx_domain_id" ]; then
+        chat 2 "DNS record ${domain} [${record_type}] does not exist yet."
+    fi
+}
+
+get_domain_wan_ip() {
+    if [ -n "${WAN_IP_COMMAND:-}" ]; then
+        wan_ip=$(sh -c "$WAN_IP_COMMAND") || chat 1 "WAN_IP_COMMAND failed for ${domain}."
+        chat 2 "Using WAN_IP_COMMAND for ${domain}."
+    elif [ "$record_type" = "AAAA" ]; then
+        wan_ip=$wan_ip6
     else
-      wan_ip="${wan_ip4}"
+        wan_ip=$wan_ip4
     fi
-  fi
+
+    [ -n "$wan_ip" ] || chat 1 "Could not determine WAN IP for ${domain} [${record_type}]."
 }
 
-# Update a dns record
-# Usage: update_record
-update_record () {
-  chat 3 "Using curl to update the DNS record with INWX API."
-  inwx_api_xml_update_record="<?xml version=\"1.0\"?>
-        <methodCall>
-          <methodName>nameserver.updateRecord</methodName>
-          <params>
-              <param>
-                <value>
-                    <struct>
-                      <member>
-                          <name>user</name>
-                          <value>
-                            <string>${inwx_user}</string>
-                          </value>
-                      </member>
-                      <member>
-                          <name>lang</name>
-                          <value>
-                            <string>en</string>
-                          </value>
-                      </member>
-                      <member>
-                          <name>pass</name>
-                          <value>
-                            <string>${inwx_password}</string>
-                          </value>
-                      </member>
-                      <member>
-                          <name>id</name>
-                          <value>
-                            <string>${inwx_domain_id}</string>
-                          </value>
-                      </member>
-                      <member>
-                          <name>content</name>
-                          <value>
-                            <string>${wan_ip}</string>
-                          </value>
-                      </member>
-                      <member>
-                          <name>ttl</name>
-                          <value>
-                            <int>${record_ttl}</int>
-                            </value>
-                      </member>
-                    </struct>
-                </value>
-              </param>
-          </params>
-        </methodCall>"
-  
-  curl --silent --output /dev/null --show-error --fail -X POST "${inwx_api}" -H "Content-Type: application/xml" -d "${inwx_api_xml_update_record}"
+create_record() {
+    response_file=$(mktemp "${tmp_dir%/}/nsupdate-create.XXXXXX") || chat 1 "Could not create createRecord response file."
+    members="$(member_string domain "$main_domain")$(member_string name "$domain")$(member_string type "$record_type")$(member_string content "$wan_ip")$(member_int ttl "$record_ttl")"
+    api_call nameserver.createRecord "$members" "$response_file"
+    inwx_domain_id=$(xml_value "$response_file" '/methodResponse/params/param/value/struct/member[name="resData"]/value/struct/member[name="id"]/value/*[1]')
+    rm -f "$response_file"
 }
 
-## Initalize nsupdate
-init
+update_record() {
+    response_file=$(mktemp "${tmp_dir%/}/nsupdate-update.XXXXXX") || chat 1 "Could not create update response file."
+    members="$(member_int id "$inwx_domain_id")$(member_string content "$wan_ip")$(member_int ttl "$record_ttl")"
+    api_call nameserver.updateRecord "$members" "$response_file"
+    rm -f "$response_file"
+}
 
-# Check if there are any usable config files
-if ls ${nsupdate_confd_dir}/*${nsupdate_conf_extension} > /dev/null 2>&1; then
-  # Loop through config files
-  for f in ${nsupdate_confd_dir}/*${nsupdate_conf_extension}
-  do
-    . ${f}
-    chat 2 "Loading config file ${f}"
+reset_record_variables() {
+    unset INWX_USER INWX_PASSWORD INWX_SHARED_SECRET INWX_TOTP_COMMAND
+    unset MAIN_DOMAIN DOMAIN RECORD_TYPE RECORD_TTL TYPE TTL WAN_IP_COMMAND INWX_DOMAIN_ID
+    unset inwx_user inwx_password inwx_shared_secret main_domain domain record_type record_ttl
+    unset inwx_domain_id inwx_domain_ip wan_ip
+}
 
-    ## Get variables from config file
-    inwx_user="${INWX_USER:-$NSUPDATE_INWX_USER}"
-    inwx_password="${INWX_PASSWORD:-$NSUPDATE_INWX_PASSWORD}"
-    main_domain="${MAIN_DOMAIN}"
-    domain="${DOMAIN}"
+process_record() {
+    config_file=$1
+    reset_record_variables
+    . "$config_file"
+    chat 2 "Loading config file ${config_file}"
 
+    inwx_user="${INWX_USER:-${NSUPDATE_INWX_USER:-}}"
+    inwx_password="${INWX_PASSWORD:-${NSUPDATE_INWX_PASSWORD:-}}"
+    inwx_shared_secret="${INWX_SHARED_SECRET:-${NSUPDATE_INWX_SHARED_SECRET:-}}"
+    main_domain="${MAIN_DOMAIN:-}"
+    domain="${DOMAIN:-}"
+    record_type="${RECORD_TYPE:-${TYPE:-$nsupdate_record_type}}"
+    record_ttl="${RECORD_TTL:-${TTL:-$nsupdate_record_ttl}}"
 
+    [ -n "$inwx_user" ] || chat 1 "No INWX username configured for ${config_file}."
+    [ -n "$inwx_password" ] || chat 1 "No INWX password configured for ${config_file}."
+    [ -n "$main_domain" ] || chat 1 "MAIN_DOMAIN is missing in ${config_file}."
+    [ -n "$domain" ] || chat 1 "DOMAIN is missing in ${config_file}."
+    case "$record_type" in A|AAAA) ;; *) chat 1 "Unsupported record type ${record_type} in ${config_file}." ;; esac
+    [ "$record_ttl" -ge 300 ] 2>/dev/null || chat 1 "RECORD_TTL must be an integer of at least 300."
 
-    RECORD_TYPE="${TYPE:-$RECORD_TYPE}" ## For backwards compatibility in config files
-    RECORD_TTL="${TTL:-$RECORD_TTL}" ## For backwards compatibility in config files
-    record_type="${RECORD_TYPE:-$nsupdate_record_type}"
-    record_ttl="${RECORD_TTL:-$nsupdate_record_ttl}"
-
-    ## Get domain info
+    inwx_login
     get_domain_info
-
-    ## Get WAN IP
     get_domain_wan_ip
 
-    ## Verbose output
     chat 2 "DOMAIN: ${domain}"
     chat 2 "RECORD TYPE: ${record_type}"
     chat 2 "RECORD TTL: ${record_ttl}"
-    chat 2 "INWX DOMAIN ID: ${inwx_domain_id}"
-    chat 2 "INWX IP: ${inwx_domain_ip}"
+    chat 2 "INWX DOMAIN ID: ${inwx_domain_id:-not existing}"
+    chat 2 "INWX IP: ${inwx_domain_ip:-not set}"
 
-    ## Check if record needs an update and do it
-    if [ "${inwx_domain_ip}" != "${wan_ip}" ]; then
-      chat 0 "Updating DNS record for ${domain} [${record_type}]. Old IP: ${inwx_domain_ip}. New IP: ${wan_ip}."
-      update_record ${inwx_user} ${inwx_password} ${inwx_domain_id} ${wan_ip} ${record_ttl}
+    if [ -z "${inwx_domain_id:-}" ]; then
+        chat 0 "Creating DNS record for ${domain} [${record_type}] with IP ${wan_ip}."
+        create_record
+        chat 0 "DNS record for ${domain} [${record_type}] created successfully${inwx_domain_id:+ with ID ${inwx_domain_id}}."
+    elif [ "${inwx_domain_ip:-}" != "$wan_ip" ]; then
+        chat 0 "Updating DNS record for ${domain} [${record_type}]. Old IP: ${inwx_domain_ip:-none}. New IP: ${wan_ip}."
+        update_record
     else
-      chat 0 "No update required for ${domain} [${record_type}]."
+        chat 0 "No update required for ${domain} [${record_type}]."
     fi
 
-    ## Clean up variables for a fresh start
-    unset INWX_USER
-    unset INWX_PASSWORD
-    unset MAIN_DOMAIN
-    unset DOMAIN
-    unset RECORD_TYPE
-    unset RECORD_TTL
-    unset WAN_IP_COMMAND
-    unset tmp_file
-    unset inwx_domain_id
-    unset inwx_domain_ip
-    unset wan_ip
-  done
-else
-  chat 1 "Couldn't find any usable config files. Check installation instructions."
-fi
+    inwx_logout
+}
+
+init
+
+set -- "${nsupdate_confd_dir}"/*"${nsupdate_conf_extension}"
+[ -e "$1" ] || chat 1 "Could not find configuration files in ${nsupdate_confd_dir}."
+for config_file in "$@"; do
+    process_record "$config_file"
+done

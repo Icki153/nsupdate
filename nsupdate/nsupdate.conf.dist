@@ -1,74 +1,38 @@
+# Global configuration for nsupdate-2fa.
+# Copy this file to nsupdate.conf and protect it with chmod 600.
 
-# nsupdate.conf
-#
-# This file holds the global configuration for nsupdate.
-# It will be found in the directory of the nsupdate script or /usr/local/etc/nsupdate.
-# All options have sensible defaults and can be left undefined, except of your INWX credentials.
+# Required INWX credentials. These values may be overridden per record.
+NSUPDATE_INWX_USER="YOUR_INWX_USER_NAME"
+NSUPDATE_INWX_PASSWORD="YOUR_INWX_USER_PASSWORD"
 
-## Backwards compatibilty
-## If you've used nsupdate before, uncomment the following lines to use your old configurations
-#NSUPDATE_CONFD_DIR="./nsupdate.d"
-#NSUPDATE_LOG_DIR="."
-#NSUPDATE_LOG_FILE="nsupdate.sh.log"
-#NSUPDATE_CONF_EXTENSION=".config"
-#NSUPDATE_TMP_DIR="."
+# Optional TOTP shared secret from the INWX 2FA setup QR code.
+# This is the permanent Base32 secret, not the changing six-digit code.
+NSUPDATE_INWX_SHARED_SECRET="YOUR_BASE32_SHARED_SECRET"
 
-# NSUPDATE_INWX_USER
-# INWX API user that's globally used; can be overwritten in DNS record configuration
-#NSUPDATE_INWX_USER="YOUR_INWX_USER_NAME" 
+# Optional alternative command that prints the current six-digit TOTP.
+# It overrides oathtool. The configuration file is trusted shell code.
+# INWX_TOTP_COMMAND="pass show inwx/totp | oathtool --totp -b -"
 
-# NSUPDATE_INWX_PASSWORD
-# INWX API password that's globally used; can be overwritten in DNS record configuration
-#NSUPDATE_INWX_PASSWORD="YOUR_INWX_USER_PASSWORD"
+# Default DNS record settings.
+# NSUPDATE_RECORD_TYPE="A"
+# NSUPDATE_RECORD_TTL="300"
 
-# NSUPDATE_RECORD_TYPE
-# DNS record type that's used when nothing is defined; A or AAAA; default: A
-#NSUPDATE_RECORD_TYPE="A"
+# Logging.
+# VERBOSE="false"
+# DEBUG="false"
+# LOG_DATE_FORMAT="%Y-%m-%d %H:%M:%S"
+# NSUPDATE_LOG_DIR="/var/log/nsupdate"
+# NSUPDATE_LOG_FILE="nsupdate.log"
 
-# NSUPDATE_RECORD_TTL
-# DNS record TTL that's used when nothing is defined; minimum: 300; default: 300
-#NSUPDATE_RECORD_TTL="300"
+# Paths.
+# BASEDIR="/usr/local/etc"
+# NSUPDATE_CONF_DIR="$BASEDIR/nsupdate"
+# NSUPDATE_CONFD_DIR="$NSUPDATE_CONF_DIR/conf.d"
+# NSUPDATE_TMP_DIR="/tmp"
+# NSUPDATE_CONF_EXTENSION=".conf"
 
-# VERBOSE
-# Print more output; true or false; default: false
-#VERBOSE="false"
-
-# DEBUG
-# Print debugging messages; true or false; default: false
-#DEBUG="false"
-
-# BASEDIR
-# Base path for configuration files on the system; default: /usr/local/etc
-#BASEDIR="/usr/local/etc"
-
-# NSUPDATE_CONF_DIR
-# Directory path of the nsupdate configuration files in base path for configuration files on the system; default: nsupdate
-#NSUPDATE_CONF_DIR="$BASEDIR/nsupdate"
-
-# NSUPDATE_CONFD_DIR
-# Directory name for the DNS config files; dfault: $NSUPDATE_CONF_DIR/conf.d
-#NSUPDATE_CONFD_DIR="$NSUPDATE_CONF_DIR/conf.d"
-
-# LOG_DATE_FORMAT
-# Date format for log files; default: %Y-%m-%d %H:%M:%S
-#LOG_DATE_FORMAT="%Y-%m-%d %H:%M:%S"
-
-# NSUPDATE_LOG_DIR
-# Directory path for the log file; default: /var/log
-#NSUPDATE_LOG_DIR="/var/log/nsupdate"
-
-# NSUPDATE_LOG_FILE
-# Name of the log file; default: nsupdate.log
-#NSUPDATE_LOG_FILE="nsupdate.log"
-
-# NSUPDATE_TMP_DIR
-# Directory path for temporary files; default: /tmp
-#NSUPDATE_TMP_DIR="/tmp"
-
-# NSUPDATE_CONF_EXTENSION
-# File name extension for configuration files; default: .conf
-#NSUPDATE_CONF_EXTENSION=".conf"
-
-# NSUPDATE_IP_CHECK_SITE
-# Website to retrieve the wan IP; should be accissible by IPv4 and IPv6; default: https://api64.ipify.org
-#NSUPDATE_IP_CHECK_SITE="https://api64.ipify.org"
+# Network/API settings.
+# NSUPDATE_IP_CHECK_SITE="https://api64.ipify.org"
+# NSUPDATE_INWX_API="https://api.domrobot.com/xmlrpc/"
+# NSUPDATE_INWX_NAMESERVER="ns.inwx.de"
+# NSUPDATE_CURL_TIMEOUT="30"
