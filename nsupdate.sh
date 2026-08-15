@@ -219,7 +219,7 @@ create_record() {
 
 update_record() {
     response_file=$(mktemp "${tmp_dir%/}/nsupdate-update.XXXXXX") || chat 1 "Could not create update response file."
-    members="$(member_int id "$inwx_domain_id")$(member_string content "$wan_ip")$(member_int ttl "$record_ttl")"
+    members="$(member_string id "$inwx_domain_id")$(member_string content "$wan_ip")$(member_int ttl "$record_ttl")"
     api_call nameserver.updateRecord "$members" "$response_file"
     rm -f "$response_file"
 }
