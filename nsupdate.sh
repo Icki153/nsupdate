@@ -146,7 +146,7 @@ inwx_login() {
     rm -f "$login_file"
 
     case "$tfa" in
-        ""|NONE|none) chat 3 "INWX session authenticated without 2FA." ;;
+        ""|NONE|none|0) chat 3 "INWX session authenticated without 2FA." ;;
         GOOGLE-AUTH|TOTP)
             [ -n "$inwx_shared_secret" ] || chat 1 "INWX requires TOTP 2FA, but no shared secret is configured."
             tan=$(generate_totp)
