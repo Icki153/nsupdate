@@ -252,7 +252,9 @@ process_record() {
     case "$record_type" in A|AAAA) ;; *) chat 1 "Unsupported record type ${record_type} in ${config_file}." ;; esac
     [ "$record_ttl" -ge 300 ] 2>/dev/null || chat 1 "RECORD_TTL must be an integer of at least 300."
 
-    inwx_login
+    if [ -z "${inwx_cookie_file:-}" ]; then
+        inwx_login
+    fi
     get_domain_info
     get_domain_wan_ip
 
@@ -273,7 +275,6 @@ process_record() {
         chat 0 "No update required for ${domain} [${record_type}]."
     fi
 
-    inwx_logout
 }
 
 init
